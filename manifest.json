@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "Slop Detector",
+  "version": "1.0.0",
+  "description": "Highlights LLM-isms on any webpage. Vibes-based, not ML.",
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["rules.js", "content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -3,6 +3,16 @@
   "name": "Slop Detector",
   "version": "1.0.0",
   "description": "Highlights LLM-isms on any webpage. Vibes-based, not ML.",
+  "icons": {
+    "16": "icon-128px.png",
+    "32": "icon-128px.png",
+    "48": "icon-128px.png",
+    "128": "icon-128px.png"
+  },
+  "action": {
+    "default_icon": "icon-128px.png",
+    "default_title": "Slop Detector"
+  },
   "content_scripts": [
     {
       "matches": ["<all_urls>"],

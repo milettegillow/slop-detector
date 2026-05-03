@@ -109,6 +109,7 @@
         }
         const span = document.createElement("span");
         span.className = "sd-hl sd-tier-" + m.tier;
+        span.setAttribute("data-sd-hl", String(m.tier));
         span.dataset.ruleId = m.ruleId;
         span.dataset.category = m.category;
         span.dataset.explanation = m.explanation;
@@ -168,26 +169,22 @@
     }
 
     // ── Single source of truth: count from DOM ────────────────────────────
-    function recountInlineFromDOM() {
-      const struct = {};
-      for (const k of STRUCT_KEYS) {
-        if (counts.byCategory[k]) struct[k] = counts.byCategory[k];
+    function updateWidgetCounts() {
+      const tier1 = document.querySelectorAll("span.sd-hl.sd-tier-1").length;
+      const tier2 = document.querySelectorAll("span.sd-hl.sd-tier-2").length;
+      const total = tier1 + tier2;
+      const byCategory = Object.create(null);
+      document.querySelectorAll("span.sd-hl").forEach((el) => {
+        const cat = (el.dataset && el.dataset.category) || "Unknown";
+        byCategory[cat] = (byCategory[cat] || 0) + 1;
+      });
+      counts.totalTier1 = tier1;
+      counts.totalTier2 = tier2;
+      counts.byCategory = byCategory;
+      renderWidget();
+      if (SD_DEBUG && console && console.log) {
+        console.log("[slop-detector] DOM truth:", { tier1: tier1, tier2: tier2, total: total, byCategory: byCategory });
       }
-      for (const k of Object.keys(counts.byCategory)) delete counts.byCategory[k];
-
-      const tier1 = document.querySelectorAll(".sd-hl.sd-tier-1");
-      const tier2 = document.querySelectorAll(".sd-hl.sd-tier-2");
-      counts.totalTier1 = tier1.length;
-      counts.totalTier2 = tier2.length;
-
-      const all = document.querySelectorAll(".sd-hl");
-      for (const el of all) {
-        const cat = el.dataset && el.dataset.category;
-        if (!cat) continue;
-        counts.byCategory[cat] = (counts.byCategory[cat] || 0) + 1;
-      }
-
-      for (const k of STRUCT_KEYS) if (struct[k]) counts.byCategory[k] = struct[k];
     }
 
     // ── Tier 3 structural metrics ─────────────────────────────────────────
@@ -225,10 +222,7 @@
     let widgetExpanded = false;
 
     function totalTells() {
-      let total = counts.totalTier1 + counts.totalTier2;
-      if (counts.byCategory["Em dash density"]) total += counts.byCategory["Em dash density"];
-      if (counts.byCategory["Three-fragment cadence"]) total += counts.byCategory["Three-fragment cadence"];
-      return total;
+      return counts.totalTier1 + counts.totalTier2;
     }
 
     function escapeHtml(s) {
@@ -395,8 +389,7 @@
       mutationsPending = false;
       const stats = walkAndProcess(document.body);
       computeStructural();
-      recountInlineFromDOM();
-      renderWidget();
+      updateWidgetCounts();
       if (SD_DEBUG && console && console.log) {
         console.log(
           "[slop-detector] re-scan: " +
@@ -443,8 +436,7 @@
     function init() {
       const stats = walkAndProcess(document.body);
       computeStructural();
-      recountInlineFromDOM();
-      renderWidget();
+      updateWidgetCounts();
       observer.observe(document.body, {
         childList: true,
         subtree: true,

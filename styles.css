@@ -8,21 +8,28 @@
 /* Highlights ────────────────────────────────────────────────────────── */
 .sd-hl {
   display: inline !important;
-  color: inherit !important;
   font: inherit !important;
+  -webkit-box-decoration-break: clone !important;
+  box-decoration-break: clone !important;
+  text-decoration: none !important;
+  visibility: visible !important;
+  opacity: 1 !important;
 }
 
 .sd-hl.sd-tier-1 {
-  background: rgba(239, 31, 159, 0.15) !important;
+  background: #fef3a2 !important;
   border-bottom: 2px solid #ef1f9f !important;
+  color: #111 !important;
   padding: 0 2px !important;
   border-radius: 0 !important;
   cursor: help !important;
 }
 
 .sd-hl.sd-tier-2 {
-  background: transparent !important;
+  background: #fff4d6 !important;
   border-bottom: 2px dotted #ef1f9f !important;
+  color: #111 !important;
+  padding: 0 2px !important;
   border-radius: 0 !important;
   cursor: help !important;
 }
@@ -239,9 +246,11 @@
 
 @keyframes sd-flash-anim {
   0% {
-    background: rgba(239, 31, 159, 0.8);
+    background: #ef1f9f !important;
+    color: #fff !important;
   }
   100% {
-    background: rgba(239, 31, 159, 0.15);
+    background: #fef3a2 !important;
+    color: #111 !important;
   }
 }

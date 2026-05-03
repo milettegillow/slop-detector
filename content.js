@@ -1,4 +1,6 @@
 (function () {
+  const SD_DEBUG = true;
+
   try {
     if (document.contentType && document.contentType !== "text/html") return;
 
@@ -22,7 +24,12 @@
       "PRE",
     ]);
 
-    const processedNodes = new WeakSet();
+    const STRUCT_KEYS = ["Em dash density", "Three-fragment cadence"];
+
+    // We track parents we've already wrapped so re-walks (mutation flushes) skip them.
+    // Detached parents are GC'd, so the WeakSet self-cleans as React re-renders.
+    const processedParents = new WeakSet();
+
     const counts = { totalTier1: 0, totalTier2: 0, byCategory: Object.create(null) };
 
     function shouldSkipAncestor(node) {
@@ -33,6 +40,17 @@
         const cls = p.className;
         if (typeof cls === "string" && /\bsd-/.test(cls)) return true;
         p = p.parentNode;
+      }
+      return false;
+    }
+
+    function parentAlreadyWrapped(parent) {
+      // Cheap iteration over direct element children; avoids forcing layout.
+      let child = parent.firstElementChild;
+      while (child) {
+        const cls = child.className;
+        if (typeof cls === "string" && /\bsd-hl\b/.test(cls)) return true;
+        child = child.nextElementSibling;
       }
       return false;
     }
@@ -71,23 +89,18 @@
       return accepted;
     }
 
-    function processTextNode(node) {
-      if (!node || node.nodeType !== 3 || !node.parentNode) return;
-      if (processedNodes.has(node)) return;
-      if (shouldSkipAncestor(node)) {
-        processedNodes.add(node);
-        return;
-      }
+    // Wrap a text node in-place. Returns number of matches wrapped, or 0.
+    // Does NOT update counts — counts are recomputed from the DOM after the batch.
+    function wrapTextNode(node) {
+      if (!node || node.nodeType !== 3) return 0;
+      if (!node.isConnected) return 0;
+      const parent = node.parentNode;
+      if (!parent || parent.nodeType !== 1) return 0;
       const text = node.nodeValue;
-      if (!text || text.length < 3) {
-        processedNodes.add(node);
-        return;
-      }
+      if (!text || text.length < 3) return 0;
       const matches = findMatches(text);
-      if (matches.length === 0) {
-        processedNodes.add(node);
-        return;
-      }
+      if (matches.length === 0) return 0;
+
       const frag = document.createDocumentFragment();
       let pos = 0;
       for (const m of matches) {
@@ -101,30 +114,80 @@
         span.dataset.explanation = m.explanation;
         span.textContent = text.slice(m.start, m.end);
         frag.appendChild(span);
-        if (m.tier === 1) counts.totalTier1++;
-        else counts.totalTier2++;
-        counts.byCategory[m.category] = (counts.byCategory[m.category] || 0) + 1;
         pos = m.end;
       }
       if (pos < text.length) {
         frag.appendChild(document.createTextNode(text.slice(pos)));
       }
-      node.parentNode.replaceChild(frag, node);
+      parent.replaceChild(frag, node);
+      return matches.length;
     }
 
-    function walkAndProcess(root) {
-      if (!root || root.nodeType !== 1) return;
+    function collectTextNodes(root) {
+      if (!root || root.nodeType !== 1) return [];
       const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
         acceptNode(n) {
           if (!n.nodeValue || n.nodeValue.trim().length < 2) return NodeFilter.FILTER_REJECT;
+          const parent = n.parentNode;
+          if (!parent || parent.nodeType !== 1) return NodeFilter.FILTER_REJECT;
+          if (processedParents.has(parent)) return NodeFilter.FILTER_REJECT;
           if (shouldSkipAncestor(n)) return NodeFilter.FILTER_REJECT;
+          if (parentAlreadyWrapped(parent)) {
+            processedParents.add(parent);
+            return NodeFilter.FILTER_REJECT;
+          }
           return NodeFilter.FILTER_ACCEPT;
         },
       });
       const nodes = [];
       let n;
       while ((n = walker.nextNode())) nodes.push(n);
-      for (const node of nodes) processTextNode(node);
+      return nodes;
+    }
+
+    function walkAndProcess(root) {
+      const candidates = collectTextNodes(root);
+      let nodesProcessed = 0;
+      let matchesAttempted = 0;
+      let wrapFailures = 0;
+      for (const node of candidates) {
+        const parent = node.parentNode;
+        try {
+          const wrapped = wrapTextNode(node);
+          nodesProcessed++;
+          matchesAttempted += wrapped;
+          if (parent && parent.nodeType === 1) processedParents.add(parent);
+        } catch (err) {
+          wrapFailures++;
+          if (SD_DEBUG && console && console.warn) {
+            console.warn("[slop-detector] wrap failure on node:", err && err.message);
+          }
+        }
+      }
+      return { textNodesConsidered: candidates.length, nodesProcessed, matchesAttempted, wrapFailures };
+    }
+
+    // ── Single source of truth: count from DOM ────────────────────────────
+    function recountInlineFromDOM() {
+      const struct = {};
+      for (const k of STRUCT_KEYS) {
+        if (counts.byCategory[k]) struct[k] = counts.byCategory[k];
+      }
+      for (const k of Object.keys(counts.byCategory)) delete counts.byCategory[k];
+
+      const tier1 = document.querySelectorAll(".sd-hl.sd-tier-1");
+      const tier2 = document.querySelectorAll(".sd-hl.sd-tier-2");
+      counts.totalTier1 = tier1.length;
+      counts.totalTier2 = tier2.length;
+
+      const all = document.querySelectorAll(".sd-hl");
+      for (const el of all) {
+        const cat = el.dataset && el.dataset.category;
+        if (!cat) continue;
+        counts.byCategory[cat] = (counts.byCategory[cat] || 0) + 1;
+      }
+
+      for (const k of STRUCT_KEYS) if (struct[k]) counts.byCategory[k] = struct[k];
     }
 
     // ── Tier 3 structural metrics ─────────────────────────────────────────
@@ -184,6 +247,8 @@
         widget = document.createElement("div");
         widget.className = "sd-widget sd-collapsed";
         document.documentElement.appendChild(widget);
+      } else if (!widget.isConnected) {
+        document.documentElement.appendChild(widget);
       }
       if (total === 0) {
         widget.style.display = "none";
@@ -240,11 +305,16 @@
       }
     }
 
+    const categoryClickIndex = Object.create(null);
+
     function scrollToCategory(category) {
       if (!category) return;
       const safe = category.replace(/"/g, '\\"');
-      const el = document.querySelector('.sd-hl[data-category="' + safe + '"]');
-      if (!el) return;
+      const els = document.querySelectorAll('.sd-hl[data-category="' + safe + '"]');
+      if (!els.length) return;
+      const idx = (categoryClickIndex[category] || 0) % els.length;
+      categoryClickIndex[category] = idx + 1;
+      const el = els[idx];
       el.scrollIntoView({ behavior: "smooth", block: "center" });
       el.classList.remove("sd-flash");
       void el.offsetWidth;
@@ -257,7 +327,7 @@
     let tooltipTimer = null;
 
     function ensureTooltip() {
-      if (tooltip) return tooltip;
+      if (tooltip && tooltip.isConnected) return tooltip;
       tooltip = document.createElement("div");
       tooltip.className = "sd-tooltip";
       tooltip.innerHTML =
@@ -313,62 +383,82 @@
     );
 
     // ── MutationObserver (debounced) ──────────────────────────────────────
+    // SPA strategy: on any mutation batch, re-walk the entire body. The
+    // processedParents WeakSet skips parents we've already wrapped, so this
+    // is cheap. React re-renders create fresh parents not in the set, so
+    // their content gets wrapped. Counts are recomputed from the DOM.
     let mutationTimer = null;
-    const pendingNodes = new Set();
-
-    function isOurOwnElement(n) {
-      if (n.nodeType !== 1) return false;
-      const cls = n.className;
-      if (typeof cls === "string" && /\bsd-/.test(cls)) return true;
-      if (n.closest && n.closest(".sd-widget, .sd-tooltip")) return true;
-      return false;
-    }
+    let mutationsPending = false;
 
     function flushMutations() {
       mutationTimer = null;
-      const nodes = Array.from(pendingNodes);
-      pendingNodes.clear();
-      for (const n of nodes) {
-        if (!n.parentNode && n.nodeType !== 3) continue;
-        if (n.nodeType === 3) {
-          processTextNode(n);
-        } else if (n.nodeType === 1) {
-          if (isOurOwnElement(n)) continue;
-          walkAndProcess(n);
-        }
-      }
+      mutationsPending = false;
+      const stats = walkAndProcess(document.body);
       computeStructural();
+      recountInlineFromDOM();
       renderWidget();
+      if (SD_DEBUG && console && console.log) {
+        console.log(
+          "[slop-detector] re-scan: " +
+            stats.textNodesConsidered + " text nodes, " +
+            stats.matchesAttempted + " matches attempted, " +
+            document.querySelectorAll(".sd-hl").length + " spans in DOM, " +
+            stats.wrapFailures + " failures"
+        );
+      }
     }
 
     function scheduleFlush() {
-      if (mutationTimer) return;
-      mutationTimer = setTimeout(flushMutations, 500);
+      if (mutationTimer) {
+        mutationsPending = true;
+        return;
+      }
+      mutationTimer = setTimeout(() => {
+        flushMutations();
+        if (mutationsPending) scheduleFlush();
+      }, 500);
     }
 
     const observer = new MutationObserver((mutations) => {
+      // We don't read addedNodes here — we just trigger a re-walk. The walker
+      // filter (processedParents + parentAlreadyWrapped) decides what's stale.
+      // Skip the trigger if every mutation is inside our own UI.
+      let interesting = false;
       for (const mut of mutations) {
         const target = mut.target;
-        if (target && target.nodeType === 1 && target.closest && target.closest(".sd-widget, .sd-tooltip")) {
+        if (
+          target &&
+          target.nodeType === 1 &&
+          target.closest &&
+          target.closest(".sd-widget, .sd-tooltip, .sd-hl")
+        ) {
           continue;
         }
-        for (const added of mut.addedNodes) {
-          if (added.nodeType === 1) {
-            if (isOurOwnElement(added)) continue;
-            pendingNodes.add(added);
-          } else if (added.nodeType === 3) {
-            pendingNodes.add(added);
-          }
-        }
+        interesting = true;
+        break;
       }
-      if (pendingNodes.size > 0) scheduleFlush();
+      if (interesting) scheduleFlush();
     });
 
     function init() {
-      walkAndProcess(document.body);
+      const stats = walkAndProcess(document.body);
       computeStructural();
+      recountInlineFromDOM();
       renderWidget();
-      observer.observe(document.body, { childList: true, subtree: true });
+      observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+      });
+      if (SD_DEBUG && console && console.log) {
+        console.log(
+          "[slop-detector] init: walked " +
+            stats.textNodesConsidered + " text nodes, " +
+            stats.matchesAttempted + " matches attempted, " +
+            document.querySelectorAll(".sd-hl").length + " spans in DOM, " +
+            stats.wrapFailures + " failures"
+        );
+      }
     }
 
     if (document.body) {
@@ -378,7 +468,7 @@
     }
   } catch (err) {
     if (typeof console !== "undefined" && console.warn) {
-      console.warn("[Slop Detector] init failed:", err);
+      console.warn("[slop-detector] init failed:", err);
     }
   }
 })();
